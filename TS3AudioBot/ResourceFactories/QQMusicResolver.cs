@@ -71,8 +71,11 @@ namespace TS3AudioBot.ResourceFactories
             var cookie = conf.Cookie.Value;
             var referer = conf.Referer.Value;
 
+            // Try to fetch media_mid for better filename coverage
+            var mediaMid = await TryFetchMediaMid(songMid, cookie, referer);
+
             // Build filename candidates based on preferred quality with fallbacks
-            var filenames = BuildFilenameCandidates(conf.DefaultQuality.Value, songMid);
+            var filenames = BuildFilenameCandidates(conf.DefaultQuality.Value, songMid, mediaMid);
             var songmids = new string[filenames.Length];
             var songtypes = new int[filenames.Length];
             for (int i = 0; i < filenames.Length; i++) { songmids[i] = songMid; songtypes[i] = 0; }
@@ -118,11 +121,20 @@ namespace TS3AudioBot.ResourceFactories
                 req = req.WithHeader("Origin", "https://y.qq.com");
 
                 string json = await req.AsString();
+                // Debug: log truncated response to help diagnose
+                try { var dbg = json.Length > 1200 ? json.Substring(0, 1200) + "..." : json; Log.Debug("QQMusic vkey response: {0}", dbg); } catch { }
                 var playUrl = ParsePlayUrlFromVkey(json);
 
                 if (string.IsNullOrWhiteSpace(playUrl))
                 {
                     var reason = TryExtractVkeyError(json) ?? "This track may require login/VIP or is region-restricted.";
+                    Log.Warn("QQMusic: Empty purl. songMid={0} mediaMid={1} uin={2} guid={3} filenames=[{4}] reason={5}",
+                        songMid,
+                        mediaMid ?? "-",
+                        ExtractUinOrZero(cookie),
+                        GenerateGuidFromCookie(cookie),
+                        string.Join(",", filenames),
+                        reason);
                     if (!string.IsNullOrWhiteSpace(cookie))
                         throw Error.LocalStr($"Unable to fetch playable URL. {reason}");
                     else
@@ -202,17 +214,36 @@ namespace TS3AudioBot.ResourceFactories
             return "0";
         }
 
-        private static string[] BuildFilenameCandidates(string? preferredQuality, string songMid)
+        private static string[] BuildFilenameCandidates(string? preferredQuality, string songMid, string? mediaMid)
         {
             // C400: aac 128k (m4a), M500: mp3 128k, M800: mp3 320k, F000: flac
             var list = new System.Collections.Generic.List<string>();
             string q = string.IsNullOrWhiteSpace(preferredQuality) ? "aac_128" : preferredQuality.ToLowerInvariant();
-            void Add(string prefix, string ext) => list.Add(prefix + songMid + ext);
+            void AddSong(string prefix, string ext) => list.Add(prefix + songMid + ext);
+            void AddMedia(string prefix, string ext)
+            {
+                if (!string.IsNullOrWhiteSpace(mediaMid))
+                    list.Add(prefix + mediaMid + ext);
+            }
             switch (q)
             {
-                case "flac": Add("F000", ".flac"); Add("M800", ".mp3"); Add("C400", ".m4a"); Add("M500", ".mp3"); break;
-                case "mp3_320": Add("M800", ".mp3"); Add("M500", ".mp3"); Add("C400", ".m4a"); break;
-                case "aac_128": default: Add("C400", ".m4a"); Add("M500", ".mp3"); Add("M800", ".mp3"); break;
+                case "flac":
+                    AddMedia("F000", ".flac");
+                    AddMedia("M800", ".mp3");
+                    AddSong("C400", ".m4a");
+                    AddMedia("M500", ".mp3");
+                    break;
+                case "mp3_320":
+                    AddMedia("M800", ".mp3");
+                    AddMedia("M500", ".mp3");
+                    AddSong("C400", ".m4a");
+                    break;
+                case "aac_128":
+                default:
+                    AddSong("C400", ".m4a");
+                    AddMedia("M500", ".mp3");
+                    AddMedia("M800", ".mp3");
+                    break;
             }
             return list.ToArray();
         }
@@ -254,6 +285,45 @@ namespace TS3AudioBot.ResourceFactories
             }
 
             return null;
+        }
+
+        private static async Task<string?> TryFetchMediaMid(string songMid, string? cookie, string? referer)
+        {
+            try
+            {
+                var dataObj = new
+                {
+                    req = new
+                    {
+                        module = "music.pf_song_detail_svr",
+                        method = "get_song_detail_yqq",
+                        param = new { song_mid = songMid, song_type = 0 }
+                    },
+                    comm = new { ct = 24, cv = 0 }
+                };
+                string dataJson = JsonSerializer.Serialize(dataObj);
+                string url = "https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&data=" + Uri.EscapeDataString(dataJson);
+                var req = WebWrapper.Request(url)
+                    .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+                    .WithHeader("Origin", "https://y.qq.com");
+                if (!string.IsNullOrWhiteSpace(cookie)) req = req.WithHeader("Cookie", cookie);
+                string json = await req.AsString();
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("req", out var r) || !r.TryGetProperty("data", out var d))
+                    return null;
+                if (!d.TryGetProperty("track_info", out var ti)) return null;
+                // fields can be file.media_mid or strMediaMid
+                if (ti.TryGetProperty("file", out var file) && file.TryGetProperty("media_mid", out var mm) && mm.ValueKind == JsonValueKind.String)
+                    return mm.GetString();
+                if (ti.TryGetProperty("strMediaMid", out var sm) && sm.ValueKind == JsonValueKind.String)
+                    return sm.GetString();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "QQMusic: Failed to fetch media_mid for {0}", songMid);
+                return null;
+            }
         }
 
         private static string? TryExtractVkeyError(string json)
