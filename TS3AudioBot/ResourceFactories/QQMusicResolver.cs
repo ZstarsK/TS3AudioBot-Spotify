@@ -111,30 +111,41 @@ namespace TS3AudioBot.ResourceFactories
 
             string dataJson = JsonSerializer.Serialize(dataObj);
             string gtk = CalculateGTK(cookie);
-            string url = $"https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&g_tk={gtk}&data=" + Uri.EscapeDataString(dataJson);
+            string gtkNew = CalculateNewGTK(cookie);
+            string uin = ExtractUinOrZero(cookie);
+            string url = $"https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&g_tk={gtk}&g_tk_new_20200303={gtkNew}&uin={uin}&data=" + Uri.EscapeDataString(dataJson);
             
             // 详细调试信息
-            Log.Info("QQMusic: Requesting vkey with g_tk={0}, uin={1}, guid={2}, songMid={3}", 
-                gtk, ExtractUinOrZero(cookie), GenerateGuidFromCookie(cookie), songMid);
+            Log.Info("QQMusic: Requesting vkey with g_tk={0}, g_tk_new={1}, uin={2}, guid={3}, songMid={4}", 
+                gtk, gtkNew, uin, GenerateGuidFromCookie(cookie), songMid);
 
             try
             {
-                var req = WebWrapper
-                    .Request(url)
-                    .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
-                    .WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .WithHeader("Accept", "application/json, text/plain, */*")
-                    .WithHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+                string json;
+                if (!string.IsNullOrWhiteSpace(conf.SignServiceUrl.Value))
+                {
+                    json = await CallExternalSigner(conf.SignServiceUrl.Value, dataObj, cookie, referer)
+                        ?? throw Error.LocalStr("External QQ sign service did not return data.");
+                }
+                else
+                {
+                    var req = WebWrapper
+                        .Request(url)
+                        .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+                        .WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                        .WithHeader("Accept", "application/json, text/plain, */*")
+                        .WithHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
                     
-                if (!string.IsNullOrWhiteSpace(cookie))
-                    req = req.WithHeader("Cookie", cookie);
+                    if (!string.IsNullOrWhiteSpace(cookie))
+                        req = req.WithHeader("Cookie", cookie);
                     
-                // Some QQ endpoints require Origin to be set as well
-                req = req.WithHeader("Origin", "https://y.qq.com");
+                    // Some QQ endpoints require Origin to be set as well
+                    req = req.WithHeader("Origin", "https://y.qq.com");
 
-                string json = await req.AsString();
+                    json = await req.AsString();
+                }
                 // Debug: log truncated response to help diagnose
-                try { var dbg = json.Length > 1200 ? json.Substring(0, 1200) + "..." : json; Log.Debug("QQMusic vkey response: {0}", dbg); } catch { }
+                try { var dbg = json.Length > 1200 ? json.Substring(0, 1200) + "..." : json; if (conf.Debug.Value) Log.Debug("QQMusic vkey response: {0}", dbg); } catch { }
                 var playUrl = ParsePlayUrlFromVkey(json);
 
                 if (string.IsNullOrWhiteSpace(playUrl))
@@ -194,7 +205,9 @@ namespace TS3AudioBot.ResourceFactories
 
                 // 构建搜索请求
                 string gtk = CalculateGTK(cookie);
-                var searchUrl = $"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298&new_json=1&remoteplace=txt.yqq.song&searchid=60997426243446155&t=0&aggr=1&cr=1&catZhida=1&lossless=0&flag_qc=0&p=1&n=20&w={Uri.EscapeDataString(keyword)}&g_tk={gtk}&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
+                string gtkNew = CalculateNewGTK(cookie);
+                string uin = ExtractUinOrZero(cookie);
+                var searchUrl = $"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298&new_json=1&remoteplace=txt.yqq.song&searchid=60997426243446155&t=0&aggr=1&cr=1&catZhida=1&lossless=0&flag_qc=0&p=1&n=20&w={Uri.EscapeDataString(keyword)}&g_tk={gtk}&g_tk_new_20200303={gtkNew}&uin={uin}&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
 
                 var req = WebWrapper.Request(searchUrl)
                     .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
@@ -312,8 +325,39 @@ namespace TS3AudioBot.ResourceFactories
         }
 
         /// <summary>
-        /// 从Cookie中提取skey并计算g_tk值
-        /// QQ音乐VIP验证需要正确的g_tk值
+        /// 从Cookie中提取QQ音乐专用的qqmusic_key
+        /// 这是QQ音乐认证的关键字段
+        /// </summary>
+        /// <param name="cookie">Cookie字符串</param>
+        /// <returns>qqmusic_key值，如果不存在则返回null</returns>
+        private static string? ExtractQQMusicKey(string? cookie)
+        {
+            if (string.IsNullOrWhiteSpace(cookie)) return null;
+            
+            // 提取qqmusic_key值
+            var match = Regex.Match(cookie, @"(?:^|;\s*)qqmusic_key=([^;]+)");
+            if (match.Success)
+            {
+                var key = match.Groups[1].Value;
+                Log.Debug("QQMusic: Found qqmusic_key in cookie (length: {0})", key.Length);
+                return key;
+            }
+            
+            // 还可能有qm_keyst字段作为备选
+            match = Regex.Match(cookie, @"(?:^|;\s*)qm_keyst=([^;]+)");
+            if (match.Success)
+            {
+                var key = match.Groups[1].Value;
+                Log.Debug("QQMusic: Found qm_keyst in cookie (length: {0})", key.Length);
+                return key;
+            }
+            
+            Log.Debug("QQMusic: No qqmusic_key or qm_keyst found in cookie");
+            return null;
+        }
+
+        /// <summary>
+        /// 从Cookie中提取skey并计算传统g_tk值
         /// </summary>
         /// <param name="cookie">Cookie字符串</param>
         /// <returns>计算得到的g_tk值</returns>
@@ -340,7 +384,7 @@ namespace TS3AudioBot.ResourceFactories
                 return "5381";
             }
 
-            // 计算g_tk：QQ音乐标准算法
+            // 计算传统g_tk：QQ音乐标准算法
             long hash = 5381;
             for (int i = 0; i < skey.Length; i++)
             {
@@ -350,6 +394,45 @@ namespace TS3AudioBot.ResourceFactories
             
             Log.Debug("QQMusic: Calculated g_tk={0} from skey", gtk);
             return gtk;
+        }
+
+        /// <summary>
+        /// 计算新版g_tk_new_20200303算法
+        /// 根据网络请求分析，QQ音乐现在需要两个g_tk值
+        /// </summary>
+        /// <param name="cookie">Cookie字符串</param>
+        /// <returns>新版g_tk值</returns>
+        private static string CalculateNewGTK(string? cookie)
+        {
+            if (string.IsNullOrWhiteSpace(cookie))
+            {
+                return "5381";
+            }
+
+            // 尝试从cookie中提取skey
+            var skeyMatch = Regex.Match(cookie, @"(?:^|;\s*)skey=([^;]+)");
+            if (!skeyMatch.Success)
+            {
+                return "5381";
+            }
+
+            var skey = skeyMatch.Groups[1].Value;
+            if (string.IsNullOrEmpty(skey))
+            {
+                return "5381";
+            }
+
+            // 新版g_tk算法 (基于观察到的498746086值推测)
+            // 这是一个尝试性实现，可能需要进一步调整
+            long hash = 5381;
+            for (int i = 0; i < skey.Length; i++)
+            {
+                hash = ((hash << 5) + hash) + (int)skey[i];
+            }
+            var newGtk = (hash & 0x7fffffff).ToString();
+            
+            Log.Debug("QQMusic: Calculated new_g_tk={0} from skey", newGtk);
+            return newGtk;
         }
 
         /// <summary>
@@ -550,6 +633,42 @@ namespace TS3AudioBot.ResourceFactories
             }
             catch { }
             return null;
+        }
+
+        private static async Task<string?> CallExternalSigner(string signServiceUrl, object dataObj, string? cookie, string? referer)
+        {
+            try
+            {
+                var payload = new
+                {
+                    data = dataObj,
+                    cookie = cookie ?? string.Empty,
+                    referer = string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer,
+                    uin = ExtractUinOrZero(cookie),
+                };
+
+                string body = JsonSerializer.Serialize(payload);
+                var req = WebWrapper.Request(signServiceUrl)
+                    .WithMethod(HttpMethod.Post)
+                    .WithHeader("Content-Type", "application/json");
+                req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                string resp = await req.AsString();
+                using var doc = JsonDocument.Parse(resp);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("json", out var jsonEl) && jsonEl.ValueKind == JsonValueKind.String)
+                    return jsonEl.GetString();
+                if (root.TryGetProperty("req_0", out _))
+                    return resp;
+                if (root.TryGetProperty("data", out var data) && data.TryGetProperty("req_0", out _))
+                    return data.GetRawText();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn(ex, "External QQ sign service failed");
+                return null;
+            }
         }
     }
 }

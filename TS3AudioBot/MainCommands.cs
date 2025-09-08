@@ -203,6 +203,16 @@ namespace TS3AudioBot
 			return $"QQ音乐Cookie已更新。{validation}";
 		}
 
+		[Command("qq signer set")]
+		[Usage("<url>", "Set external QQ sign/encrypt service URL (for new u6 API).")]
+		public static string CommandQqSignerSet(ConfRoot config, string url)
+		{
+			config.Factories.QqMusic.SignServiceUrl.Value = url;
+			if (!config.Save())
+				throw new CommandException("Signer URL set but could not be saved to file.", CommandExceptionReason.CommandError);
+			return $"QQ sign service URL updated: {url}";
+		}
+
 		private static string ValidateQQMusicCookie(string cookie)
 		{
 			if (string.IsNullOrWhiteSpace(cookie))

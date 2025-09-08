@@ -84,6 +84,18 @@ namespace TS3AudioBot.Config
 		// Referer header used when calling QQ APIs
 		public ConfigValue<string> Referer { get; } = new ConfigValue<string>("referer", "https://y.qq.com/",
 			"HTTP Referer header for QQ Music requests.");
+
+		// Optional external signer/proxy for new u6 API (ag-1 body + dynamic sign)
+		public ConfigValue<string> SignServiceUrl { get; } = new ConfigValue<string>("sign_service_url", "",
+			"Optional: URL to an external sign/encrypt proxy that takes the vkey JSON payload and returns decrypted JSON response from u6.y.qq.com.");
+
+		// Use enhanced parameters including g_tk tokens on classic requests
+		public ConfigValue<bool> IncludeGtk { get; } = new ConfigValue<bool>("include_gtk", true,
+			"Include g_tk and g_tk_new_20200303 calculated from your cookie in classic requests.");
+
+		// Enable extra debug logging
+		public ConfigValue<bool> Debug { get; } = new ConfigValue<bool>("debug", false,
+			"Enable additional debug logs for QQ Music resolver.");
 	}
 
 	public class ConfTools : ConfigTable
