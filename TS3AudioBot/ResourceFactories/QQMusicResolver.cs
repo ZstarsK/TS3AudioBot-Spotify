@@ -112,14 +112,23 @@ namespace TS3AudioBot.ResourceFactories
             string dataJson = JsonSerializer.Serialize(dataObj);
             string gtk = CalculateGTK(cookie);
             string url = $"https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&g_tk={gtk}&data=" + Uri.EscapeDataString(dataJson);
+            
+            // 详细调试信息
+            Log.Info("QQMusic: Requesting vkey with g_tk={0}, uin={1}, guid={2}, songMid={3}", 
+                gtk, ExtractUinOrZero(cookie), GenerateGuidFromCookie(cookie), songMid);
 
             try
             {
                 var req = WebWrapper
                     .Request(url)
-                    .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer);
+                    .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+                    .WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .WithHeader("Accept", "application/json, text/plain, */*")
+                    .WithHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+                    
                 if (!string.IsNullOrWhiteSpace(cookie))
                     req = req.WithHeader("Cookie", cookie);
+                    
                 // Some QQ endpoints require Origin to be set as well
                 req = req.WithHeader("Origin", "https://y.qq.com");
 
@@ -331,13 +340,13 @@ namespace TS3AudioBot.ResourceFactories
                 return "5381";
             }
 
-            // 计算g_tk：这是QQ音乐使用的标准算法
-            int hash = 5381;
+            // 计算g_tk：QQ音乐标准算法
+            long hash = 5381;
             for (int i = 0; i < skey.Length; i++)
             {
-                hash += (hash << 5) + (int)skey[i];
+                hash = hash * 33 + (int)skey[i];
             }
-            var gtk = (hash & 2147483647).ToString();
+            var gtk = (hash & 0x7fffffff).ToString();
             
             Log.Debug("QQMusic: Calculated g_tk={0} from skey", gtk);
             return gtk;
@@ -369,10 +378,9 @@ namespace TS3AudioBot.ResourceFactories
             else
                 issues.Add("缺少skey字段(VIP验证必需)");
 
+            // p_skey和p_lskey主要用于JS环境，HTTP请求中不一定需要
             if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_skey=[^;]+"))
                 hasRequiredFields.Add("p_skey");
-            else
-                issues.Add("缺少p_skey字段");
 
             if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_lskey=[^;]+"))
                 hasRequiredFields.Add("p_lskey");

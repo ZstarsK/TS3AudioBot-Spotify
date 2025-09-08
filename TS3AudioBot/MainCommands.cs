@@ -211,22 +211,23 @@ namespace TS3AudioBot
 			var issues = new List<string>();
 			var hasFields = new List<string>();
 
-			// 检查必要字段
-			if (Regex.IsMatch(cookie, @"(?:^|;\s*)uin=o?\d+"))
-				hasFields.Add("uin");
-			else
-				issues.Add("缺少uin字段");
+            // 检查必要字段
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)uin=o?\d+"))
+                hasFields.Add("uin");
+            else
+                issues.Add("缺少uin字段");
 
-			if (Regex.IsMatch(cookie, @"(?:^|;\s*)skey=[^;]+"))
-				hasFields.Add("skey");
-			else
-				issues.Add("缺少skey字段(VIP验证必需)");
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)skey=[^;]+"))
+                hasFields.Add("skey");
+            else
+                issues.Add("缺少skey字段(VIP验证必需)");
 
-			if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_skey=[^;]+"))
-				hasFields.Add("p_skey");
+            // p_skey主要用于JS环境，HTTP请求中不一定需要
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_skey=[^;]+"))
+                hasFields.Add("p_skey");
 
-			if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_lskey=[^;]+"))
-				hasFields.Add("p_lskey");
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_lskey=[^;]+"))
+                hasFields.Add("p_lskey");
 
 			var result = new StringBuilder();
 			
