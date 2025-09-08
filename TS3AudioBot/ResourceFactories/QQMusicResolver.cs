@@ -109,7 +109,8 @@ namespace TS3AudioBot.ResourceFactories
             };
 
             string dataJson = JsonSerializer.Serialize(dataObj);
-            string url = "https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&g_tk=5381&data=" + Uri.EscapeDataString(dataJson);
+            string gtk = CalculateGTK(cookie);
+            string url = $"https://u.y.qq.com/cgi-bin/musics.fcg?format=json&inCharset=utf8&outCharset=utf-8&needNewCode=0&platform=yqq.json&g_tk={gtk}&data=" + Uri.EscapeDataString(dataJson);
 
             try
             {
@@ -129,17 +130,22 @@ namespace TS3AudioBot.ResourceFactories
                 if (string.IsNullOrWhiteSpace(playUrl))
                 {
                     var reason = TryExtractVkeyError(json) ?? "This track may require login/VIP or is region-restricted.";
-                    Log.Warn("QQMusic: Empty purl. songMid={0} mediaMid={1} uin={2} guid={3} filenames=[{4}] reason={5}",
+                    var cookieInfo = AnalyzeCookieForVip(cookie);
+                    
+                    Log.Warn("QQMusic: Empty purl. songMid={0} mediaMid={1} uin={2} guid={3} filenames=[{4}] reason={5} cookieStatus={6}",
                         songMid,
                         mediaMid ?? "-",
                         ExtractUinOrZero(cookie),
                         GenerateGuidFromCookie(cookie),
                         string.Join(",", filenames),
-                        reason);
-                    if (!string.IsNullOrWhiteSpace(cookie))
-                        throw Error.LocalStr($"Unable to fetch playable URL. {reason}");
-                    else
-                        throw Error.LocalStr($"Unable to fetch playable URL. {reason}");
+                        reason,
+                        cookieInfo);
+                        
+                    var errorMessage = $"Unable to fetch playable URL. {reason}";
+                    if (!string.IsNullOrWhiteSpace(cookieInfo))
+                        errorMessage += $" Cookie状态: {cookieInfo}";
+                        
+                    throw Error.LocalStr(errorMessage);
                 }
 
                 return new PlayResource(playUrl, new AudioResource(songMid, resource.ResourceTitle ?? songMid, ResolverFor));
@@ -177,7 +183,8 @@ namespace TS3AudioBot.ResourceFactories
                 var referer = conf.Referer.Value;
 
                 // 构建搜索请求
-                var searchUrl = $"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298&new_json=1&remoteplace=txt.yqq.song&searchid=60997426243446155&t=0&aggr=1&cr=1&catZhida=1&lossless=0&flag_qc=0&p=1&n=20&w={Uri.EscapeDataString(keyword)}&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
+                string gtk = CalculateGTK(cookie);
+                var searchUrl = $"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298&new_json=1&remoteplace=txt.yqq.song&searchid=60997426243446155&t=0&aggr=1&cr=1&catZhida=1&lossless=0&flag_qc=0&p=1&n=20&w={Uri.EscapeDataString(keyword)}&g_tk={gtk}&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
 
                 var req = WebWrapper.Request(searchUrl)
                     .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
@@ -292,6 +299,105 @@ namespace TS3AudioBot.ResourceFactories
             var m = Regex.Match(cookie, @"(?:^|;\s*)uin=o?(\d+)");
             if (m.Success) return m.Groups[1].Value;
             return "0";
+        }
+
+        /// <summary>
+        /// 从Cookie中提取skey并计算g_tk值
+        /// QQ音乐VIP验证需要正确的g_tk值
+        /// </summary>
+        /// <param name="cookie">Cookie字符串</param>
+        /// <returns>计算得到的g_tk值</returns>
+        private static string CalculateGTK(string? cookie)
+        {
+            if (string.IsNullOrWhiteSpace(cookie))
+            {
+                Log.Debug("QQMusic: No cookie provided, using default g_tk=5381");
+                return "5381";
+            }
+
+            // 尝试从cookie中提取skey
+            var skeyMatch = Regex.Match(cookie, @"(?:^|;\s*)skey=([^;]+)");
+            if (!skeyMatch.Success)
+            {
+                Log.Debug("QQMusic: No skey found in cookie, using default g_tk=5381");
+                return "5381";
+            }
+
+            var skey = skeyMatch.Groups[1].Value;
+            if (string.IsNullOrEmpty(skey))
+            {
+                Log.Debug("QQMusic: Empty skey, using default g_tk=5381");
+                return "5381";
+            }
+
+            // 计算g_tk：这是QQ音乐使用的标准算法
+            int hash = 5381;
+            for (int i = 0; i < skey.Length; i++)
+            {
+                hash += (hash << 5) + (int)skey[i];
+            }
+            var gtk = (hash & 2147483647).ToString();
+            
+            Log.Debug("QQMusic: Calculated g_tk={0} from skey", gtk);
+            return gtk;
+        }
+
+        /// <summary>
+        /// 分析Cookie中的VIP相关字段，帮助诊断VIP音乐播放问题
+        /// </summary>
+        /// <param name="cookie">Cookie字符串</param>
+        /// <returns>Cookie状态分析结果</returns>
+        private static string AnalyzeCookieForVip(string? cookie)
+        {
+            if (string.IsNullOrWhiteSpace(cookie))
+            {
+                return "未设置Cookie";
+            }
+
+            var issues = new List<string>();
+            var hasRequiredFields = new List<string>();
+
+            // 检查关键字段
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)uin=o?\d+"))
+                hasRequiredFields.Add("uin");
+            else
+                issues.Add("缺少uin字段");
+
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)skey=[^;]+"))
+                hasRequiredFields.Add("skey");
+            else
+                issues.Add("缺少skey字段(VIP验证必需)");
+
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_skey=[^;]+"))
+                hasRequiredFields.Add("p_skey");
+            else
+                issues.Add("缺少p_skey字段");
+
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_lskey=[^;]+"))
+                hasRequiredFields.Add("p_lskey");
+
+            // 检查会员相关字段
+            var vipFields = new List<string>();
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)vip_type=[^;]*[1-9]"))
+                vipFields.Add("vip_type");
+            if (Regex.IsMatch(cookie, @"(?:^|;\s*)login_type=[^;]+"))
+                vipFields.Add("login_type");
+
+            var result = new StringBuilder();
+            
+            if (hasRequiredFields.Any())
+                result.Append($"已有字段[{string.Join(",", hasRequiredFields)}]");
+            
+            if (vipFields.Any())
+                result.Append($" VIP字段[{string.Join(",", vipFields)}]");
+            
+            if (issues.Any())
+            {
+                if (result.Length > 0) result.Append(" ");
+                result.Append($"问题[{string.Join(",", issues)}]");
+            }
+
+            return result.ToString();
         }
 
         private static string[] BuildFilenameCandidates(string? preferredQuality, string songMid, string? mediaMid)

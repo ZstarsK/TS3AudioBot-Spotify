@@ -193,14 +193,55 @@ namespace TS3AudioBot
 		[Usage("<cookie>", "Set the QQ Music Cookie header captured from y.qq.com. Use private chat to avoid leaking secrets.")]
 		public static string CommandQqSetCookie(ConfRoot config, string cookie)
 		{
-			// Basic format hint to help user
-			bool looksOk = cookie.Contains("uin=", StringComparison.OrdinalIgnoreCase);
+			// 详细的Cookie验证
+			var validation = ValidateQQMusicCookie(cookie);
 			config.Factories.QqMusic.Cookie.Value = cookie;
+			
 			if (!config.Save())
-				throw new CommandException("Cookie was set but could not be saved to file. Changes are temporary until restart.", CommandExceptionReason.CommandError);
-			return looksOk
-				? "QQ Music cookie updated."
-				: "Cookie saved, but it doesn't look complete (missing uin=). It may fail; try pasting the full 'Cookie:' header.";
+				throw new CommandException("Cookie was设置成功但无法保存到文件。更改仅在重启前有效。", CommandExceptionReason.CommandError);
+			
+			return $"QQ音乐Cookie已更新。{validation}";
+		}
+
+		private static string ValidateQQMusicCookie(string cookie)
+		{
+			if (string.IsNullOrWhiteSpace(cookie))
+				return "警告: Cookie为空";
+
+			var issues = new List<string>();
+			var hasFields = new List<string>();
+
+			// 检查必要字段
+			if (Regex.IsMatch(cookie, @"(?:^|;\s*)uin=o?\d+"))
+				hasFields.Add("uin");
+			else
+				issues.Add("缺少uin字段");
+
+			if (Regex.IsMatch(cookie, @"(?:^|;\s*)skey=[^;]+"))
+				hasFields.Add("skey");
+			else
+				issues.Add("缺少skey字段(VIP验证必需)");
+
+			if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_skey=[^;]+"))
+				hasFields.Add("p_skey");
+
+			if (Regex.IsMatch(cookie, @"(?:^|;\s*)p_lskey=[^;]+"))
+				hasFields.Add("p_lskey");
+
+			var result = new StringBuilder();
+			
+			if (hasFields.Count >= 2)
+			{
+				result.Append($" ✓已检测到字段: {string.Join(", ", hasFields)}");
+			}
+
+			if (issues.Any())
+			{
+				result.Append($" ⚠️问题: {string.Join(", ", issues)}");
+				result.Append(" 建议从y.qq.com登录页面重新获取完整Cookie");
+			}
+
+			return result.ToString();
 		}
 
 		private static bool LooksLikeQqUrl(string text)
