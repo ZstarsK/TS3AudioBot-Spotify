@@ -18,6 +18,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using TS3AudioBot.Algorithm;
 using TS3AudioBot.Audio;
 using TS3AudioBot.CommandSystem;
@@ -48,8 +50,8 @@ using TSLib.Messages;
 
 namespace TS3AudioBot
 {
-	public static class MainCommands
-	{
+		public static class MainCommands
+		{
 		internal static ICommandBag Bag { get; } = new MainCommandsBag();
 
 		internal class MainCommandsBag : ICommandBag
@@ -142,11 +144,26 @@ namespace TS3AudioBot
 		public static Task CommandBotAvatarClear(Ts3Client ts3Client) => ts3Client.DeleteAvatar();
 
 		// QQ Music commands
-		[Command("qq")]
-		[Usage("<id|url>", "Play a QQ Music track by songmid or y.qq.com URL (uses 128k m4a PoC)")]
-		public static async Task CommandQqPlay(PlayManager playManager, InvokerData invoker, string idOrUrl)
+		[Command("qq play")]
+		[Usage("<id|url|keyword>", "Play a QQ Music track by songmid / y.qq.com URL, or search by song name and play the first result.")]
+		public static async Task CommandQqPlay(PlayManager playManager, InvokerData invoker, ConfRoot config, string query)
 		{
-			await playManager.Play(invoker, idOrUrl, "qqmusic");
+			// If input already looks like a URL or songmid, play directly via qqmusic resolver
+			if (LooksLikeQqUrl(query) || LooksLikeQqSongMid(query) || query.StartsWith("qqmusic:", StringComparison.OrdinalIgnoreCase))
+			{
+				await playManager.Play(invoker, query, "qqmusic");
+				return;
+			}
+
+			// Otherwise perform a search and play the first match
+			var cookie = config.Factories.QqMusic.Cookie.Value ?? string.Empty;
+			var referer = string.IsNullOrWhiteSpace(config.Factories.QqMusic.Referer.Value) ? "https://y.qq.com/" : config.Factories.QqMusic.Referer.Value;
+
+			var mid = await QqSearchFirstSongMid(query, cookie, referer);
+			if (string.IsNullOrWhiteSpace(mid))
+				throw new CommandException($"No results found for: {query}", CommandExceptionReason.CommandError);
+
+			await playManager.Play(invoker, mid!, "qqmusic");
 		}
 
 		[Command("qq setcookie")]
@@ -161,6 +178,69 @@ namespace TS3AudioBot
 			return looksOk
 				? "QQ Music cookie updated."
 				: "Cookie saved, but it doesn't look complete (missing uin=). It may fail; try pasting the full 'Cookie:' header.";
+		}
+
+		private static bool LooksLikeQqUrl(string text)
+			=> text.Contains("y.qq.com", StringComparison.OrdinalIgnoreCase)
+				|| text.Contains("qq.com", StringComparison.OrdinalIgnoreCase);
+
+		private static bool LooksLikeQqSongMid(string text)
+		{
+			if (string.IsNullOrWhiteSpace(text)) return false;
+			var len = text.Length;
+			if (len < 12 || len > 24) return false;
+			return Regex.IsMatch(text, "^[0-9A-Za-z]+$");
+		}
+
+		private static async Task<string?> QqSearchFirstSongMid(string keyword, string cookie, string referer)
+		{
+			// Use the classic QQ search endpoint which returns JSON
+			// Example: https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&new_json=1&p=1&n=10&w=keyword
+			string url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&new_json=1&p=1&n=10&w=" + Uri.EscapeDataString(keyword);
+
+			var req = WebWrapper.Request(url).WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer);
+			if (!string.IsNullOrWhiteSpace(cookie)) req = req.WithHeader("Cookie", cookie);
+
+			string json = await req.AsString();
+			try
+			{
+				using var doc = JsonDocument.Parse(json);
+				var root = doc.RootElement;
+				if (!root.TryGetProperty("data", out var data)) return null;
+				if (!data.TryGetProperty("song", out var song)) return null;
+				if (!song.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array || list.GetArrayLength() == 0) return null;
+
+				// Prefer the first non-VIP playable item if possible
+				for (int i = 0; i < list.GetArrayLength(); i++)
+				{
+					var item = list[i];
+					bool playable = true;
+					if (item.TryGetProperty("pay", out var payObj))
+					{
+						if (payObj.TryGetProperty("pay_play", out var pp) && pp.ValueKind == JsonValueKind.Number && pp.GetInt32() != 0)
+							playable = false; // requires paid play
+					}
+					if (playable)
+					{
+						if (item.TryGetProperty("mid", out var midEl) && midEl.ValueKind == JsonValueKind.String)
+							return midEl.GetString();
+						if (item.TryGetProperty("songmid", out var smidEl) && smidEl.ValueKind == JsonValueKind.String)
+							return smidEl.GetString();
+					}
+				}
+
+				// Fallback to the first item if none marked free
+				var first = list[0];
+				if (first.TryGetProperty("mid", out var midEl2) && midEl2.ValueKind == JsonValueKind.String)
+					return midEl2.GetString();
+				if (first.TryGetProperty("songmid", out var smidEl2) && smidEl2.ValueKind == JsonValueKind.String)
+					return smidEl2.GetString();
+			}
+			catch
+			{
+				// ignore and report no result
+			}
+			return null;
 		}
 
 		[Command("bot badges")]
