@@ -141,6 +141,28 @@ namespace TS3AudioBot
 		[Command("bot avatar clear")]
 		public static Task CommandBotAvatarClear(Ts3Client ts3Client) => ts3Client.DeleteAvatar();
 
+		// QQ Music commands
+		[Command("qq")]
+		[Usage("<id|url>", "Play a QQ Music track by songmid or y.qq.com URL (uses 128k m4a PoC)")]
+		public static async Task CommandQqPlay(PlayManager playManager, InvokerData invoker, string idOrUrl)
+		{
+			await playManager.Play(invoker, idOrUrl, "qqmusic");
+		}
+
+		[Command("qq setcookie")]
+		[Usage("<cookie>", "Set the QQ Music Cookie header captured from y.qq.com. Use private chat to avoid leaking secrets.")]
+		public static string CommandQqSetCookie(ConfRoot config, string cookie)
+		{
+			// Basic format hint to help user
+			bool looksOk = cookie.Contains("uin=", StringComparison.OrdinalIgnoreCase);
+			config.Factories.QqMusic.Cookie.Value = cookie;
+			if (!config.Save())
+				throw new CommandException("Cookie was set but could not be saved to file. Changes are temporary until restart.", CommandExceptionReason.CommandError);
+			return looksOk
+				? "QQ Music cookie updated."
+				: "Cookie saved, but it doesn't look complete (missing uin=). It may fail; try pasting the full 'Cookie:' header.";
+		}
+
 		[Command("bot badges")]
 		public static Task CommandBotBadges(Ts3Client ts3Client, string badges) => ts3Client.ChangeBadges(badges);
 

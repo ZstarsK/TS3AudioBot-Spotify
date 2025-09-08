@@ -56,6 +56,7 @@ namespace TS3AudioBot.Config
 		public ConfPath Media { get; } = Create<ConfPath>("media",
 			"The default path to look for local resources.");
 		public ConfResolverYoutube Youtube { get; } = Create<ConfResolverYoutube>("youtube");
+		public ConfResolverQqMusic QqMusic { get; } = Create<ConfResolverQqMusic>("qqmusic");
 	}
 
 	public class ConfResolverYoutube : ConfigTable
@@ -67,6 +68,22 @@ namespace TS3AudioBot.Config
 		public ConfigValue<string> ApiKey { get; } = new ConfigValue<string>("youtube_api_key", "",
 			"Set your own youtube api key to keep using the old youtube factory loader.\n" +
 			"This feature is unsupported and may break at any time");
+	}
+
+	public class ConfResolverQqMusic : ConfigTable
+	{
+		// Enable/disable the resolver without removing config
+		public ConfigValue<bool> Enabled { get; } = new ConfigValue<bool>("enabled", true,
+			"Enable or disable the QQ Music resolver.");
+		// Cookie string as captured from y.qq.com. Leave empty to use anonymous (limited) access
+		public ConfigValue<string> Cookie { get; } = new ConfigValue<string>("cookie", "",
+			"QQ Music cookie string. Paste raw `Cookie:` header captured from y.qq.com requests. Leave empty for anonymous access (limited).");
+		// Default quality preference (currently only aac_128 PoC implemented)
+		public ConfigValue<string> DefaultQuality { get; } = new ConfigValue<string>("default_quality", "aac_128",
+			"Preferred quality: aac_128 | mp3_320 | flac. PoC supports aac_128.");
+		// Referer header used when calling QQ APIs
+		public ConfigValue<string> Referer { get; } = new ConfigValue<string>("referer", "https://y.qq.com/",
+			"HTTP Referer header for QQ Music requests.");
 	}
 
 	public class ConfTools : ConfigTable

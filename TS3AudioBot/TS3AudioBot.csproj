@@ -92,21 +92,11 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <Target Name="GenerateGitVersion" BeforeTargets="BeforeCompile">
-    <ItemGroup>
-      <VersionBuildScript Include="build.csx" />
-      <VersionBuildOutputFile Include="$(IntermediateOutputPath)Version.g.cs" />
-    </ItemGroup>
-    <Exec Command="dotnet tool install --global dotnet-script" IgnoreExitCode="true" />
-    <Exec Command="dotnet tool install --global GitVersion.Tool" IgnoreExitCode="true" />
-    <Exec Command="dotnet script @(VersionBuildScript) -- @(VersionBuildOutputFile) $(Configuration)" IgnoreExitCode="true">
-      <Output TaskParameter="ExitCode" PropertyName="GitverExit" />
-    </Exec>
-    <ItemGroup Condition="$(GitverExit) == '0'">
-      <FileWrites Include="@(VersionBuildOutputFile)" />
-      <Compile Include="@(VersionBuildOutputFile)">
-        <AutoGen>True</AutoGen>
-      </Compile>
-    </ItemGroup>
-  </Target>
+  <!-- 版本生成已移除，因为dotnet-script和GitVersion.Tool在.NET Core 3.1中不可用 -->
+  <!-- 使用静态版本信息 -->
+  <PropertyGroup>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0-dev</InformationalVersion>
+  </PropertyGroup>
 </Project>

@@ -190,7 +190,7 @@ namespace TS3AudioBot.Environment
 		Mono,
 	}
 
-	public partial class BuildData
+	public class BuildData
 	{
 		public string Version = "<?>";
 		public string Branch = "<?>";
@@ -206,7 +206,14 @@ namespace TS3AudioBot.Environment
 		public string ToLongString() => $"\nVersion: {Version}\nBranch: {Branch}\nCommitHash: {CommitSha}";
 		public override string ToString() => $"{Version}/{Branch}/{(CommitSha.Length > 8 ? CommitSha.Substring(0, 8) : CommitSha)}";
 
-		partial void GetDataInternal();
+		private void GetDataInternal()
+		{
+			// 静态版本信息，因为dotnet-script和GitVersion.Tool在.NET Core 3.1中不可用
+			this.Version = "1.0.0-dev";
+			this.Branch = "master";
+			this.CommitSha = "unknown";
+			this.BuildConfiguration = "Release";
+		}
 	}
 
 	public class PlatformVersion
