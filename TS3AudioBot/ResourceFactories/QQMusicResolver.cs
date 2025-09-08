@@ -8,6 +8,7 @@
 // program. If not, see <https://opensource.org/licenses/OSL-3.0>.
 
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -19,7 +20,7 @@ using TS3AudioBot.Helper;
 namespace TS3AudioBot.ResourceFactories
 {
     // Minimal QQ Music resolver (PoC): resolves a single songmid to a playable 128k m4a link
-    public sealed class QQMusicResolver : IResourceResolver
+    public sealed class QQMusicResolver : IResourceResolver, ISearchResolver
     {
         private static readonly NLog.Logger Log = NLog.LogManager.GetCurrentClassLogger();
 
@@ -160,6 +161,85 @@ namespace TS3AudioBot.ResourceFactories
                 : $"qqmusic:{resource.ResourceId}";
 
         public void Dispose() { }
+
+        // 实现ISearchResolver接口
+        public async Task<IList<AudioResource>> Search(ResolveContext ctx, string keyword)
+        {
+            if (!conf.Enabled)
+                throw Error.LocalStr("QQ Music resolver is disabled in config.");
+
+            if (string.IsNullOrWhiteSpace(keyword))
+                return new List<AudioResource>();
+
+            try
+            {
+                var cookie = conf.Cookie.Value;
+                var referer = conf.Referer.Value;
+
+                // 构建搜索请求
+                var searchUrl = $"https://c.y.qq.com/soso/fcgi-bin/client_search_cp?ct=24&qqmusic_ver=1298&new_json=1&remoteplace=txt.yqq.song&searchid=60997426243446155&t=0&aggr=1&cr=1&catZhida=1&lossless=0&flag_qc=0&p=1&n=20&w={Uri.EscapeDataString(keyword)}&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
+
+                var req = WebWrapper.Request(searchUrl)
+                    .WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+                    .WithHeader("Origin", "https://y.qq.com");
+                
+                if (!string.IsNullOrWhiteSpace(cookie))
+                    req = req.WithHeader("Cookie", cookie);
+
+                string json = await req.AsString();
+                Log.Debug("QQMusic search response: {0}", json.Length > 500 ? json.Substring(0, 500) + "..." : json);
+
+                return ParseSearchResults(json);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "QQMusic search failed for keyword: {0}", keyword);
+                throw Error.LocalStr("Failed to search QQ Music.");
+            }
+        }
+
+        private static IList<AudioResource> ParseSearchResults(string json)
+        {
+            var results = new List<AudioResource>();
+            
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                
+                if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                    !data.TryGetProperty("song", out var song) ||
+                    !song.TryGetProperty("list", out var list) ||
+                    list.ValueKind != JsonValueKind.Array)
+                {
+                    Log.Warn("QQMusic search: Invalid response format");
+                    return results;
+                }
+
+                foreach (var item in list.EnumerateArray())
+                {
+                    if (item.TryGetProperty("songmid", out var songmid) &&
+                        item.TryGetProperty("songname", out var songname) &&
+                        item.TryGetProperty("singer", out var singer))
+                    {
+                        var songName = songname.GetString() ?? "Unknown";
+                        var singerName = singer.GetString() ?? "Unknown";
+                        var songId = songmid.GetString();
+                        
+                        if (!string.IsNullOrWhiteSpace(songId))
+                        {
+                            var title = $"{songName} - {singerName}";
+                            results.Add(new AudioResource(songId, title, "qqmusic"));
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Failed to parse QQMusic search results");
+            }
+
+            return results;
+        }
 
         private static bool IsLikelySongMid(string text)
         {

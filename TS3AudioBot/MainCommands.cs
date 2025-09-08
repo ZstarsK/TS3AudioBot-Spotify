@@ -52,6 +52,7 @@ namespace TS3AudioBot
 {
 		public static class MainCommands
 		{
+			private static readonly NLog.Logger Log = NLog.LogManager.GetCurrentClassLogger();
 		internal static ICommandBag Bag { get; } = new MainCommandsBag();
 
 		internal class MainCommandsBag : ICommandBag
@@ -163,7 +164,29 @@ namespace TS3AudioBot
 			if (string.IsNullOrWhiteSpace(mid))
 				throw new CommandException($"No results found for: {query}", CommandExceptionReason.CommandError);
 
+			Log.Debug("QQ search picked mid={0} for query='{1}'", mid, query);
 			await playManager.Play(invoker, mid!, "qqmusic");
+		}
+
+		[Command("qq search")]
+		[Usage("<keyword>", "Search QQ Music and list the top results with playability info.")]
+		public static async Task<string> CommandQqSearch(ConfRoot config, string keyword)
+		{
+			var cookie = config.Factories.QqMusic.Cookie.Value ?? string.Empty;
+			var referer = string.IsNullOrWhiteSpace(config.Factories.QqMusic.Referer.Value) ? "https://y.qq.com/" : config.Factories.QqMusic.Referer.Value;
+			var items = await QqSearchList(keyword, cookie, referer, 10);
+			if (items.Count == 0) return $"No results for: {keyword}";
+			var sb = new StringBuilder();
+			for (int i = 0; i < items.Count; i++)
+			{
+				var it = items[i];
+				sb.Append('#').Append(i + 1).Append(' ')
+					.Append(it.Title).Append(" - ").Append(it.Singers)
+					.Append(" [").Append(it.Playable ? "free" : "VIP").Append("] ")
+					.Append("mid:").Append(it.Mid)
+					.Append('\n');
+			}
+			return sb.ToString();
 		}
 
 		[Command("qq setcookie")]
@@ -198,17 +221,40 @@ namespace TS3AudioBot
 			// Example: https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&new_json=1&p=1&n=10&w=keyword
 			string url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&new_json=1&p=1&n=10&w=" + Uri.EscapeDataString(keyword);
 
-			var req = WebWrapper.Request(url).WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer);
+			var req = WebWrapper.Request(url)
+				.WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+				.WithHeader("Origin", "https://y.qq.com")
+				.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 			if (!string.IsNullOrWhiteSpace(cookie)) req = req.WithHeader("Cookie", cookie);
 
+			Log.Debug("QQMusic search URL: {0}", url);
+			Log.Debug("QQMusic search cookie: {0}", string.IsNullOrWhiteSpace(cookie) ? "None" : "Present");
+			
 			string json = await req.AsString();
+			Log.Debug("QQMusic search response length: {0}", json.Length);
 			try
 			{
+				Log.Debug("QQMusic search response preview: {0}", json.Length > 500 ? json.Substring(0, 500) + "..." : json);
+				
 				using var doc = JsonDocument.Parse(json);
 				var root = doc.RootElement;
-				if (!root.TryGetProperty("data", out var data)) return null;
-				if (!data.TryGetProperty("song", out var song)) return null;
-				if (!song.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array || list.GetArrayLength() == 0) return null;
+				if (!root.TryGetProperty("data", out var data)) 
+				{
+					Log.Warn("QQMusic search: No 'data' property in response");
+					return null;
+				}
+				if (!data.TryGetProperty("song", out var song)) 
+				{
+					Log.Warn("QQMusic search: No 'song' property in data");
+					return null;
+				}
+				if (!song.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array || list.GetArrayLength() == 0) 
+				{
+					Log.Warn("QQMusic search: No valid song list found");
+					return null;
+				}
+				
+				Log.Debug("QQMusic search: Found {0} songs", list.GetArrayLength());
 
 				// Prefer the first non-VIP playable item if possible
 				for (int i = 0; i < list.GetArrayLength(); i++)
@@ -241,6 +287,61 @@ namespace TS3AudioBot
 				// ignore and report no result
 			}
 			return null;
+		}
+
+		private sealed class QqSearchItem
+		{
+			public string Mid = string.Empty;
+			public string Title = string.Empty;
+			public string Singers = string.Empty;
+			public bool Playable = true;
+		}
+
+		private static async Task<List<QqSearchItem>> QqSearchList(string keyword, string cookie, string referer, int take)
+		{
+			string url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&new_json=1&p=1&n=" + take + "&w=" + Uri.EscapeDataString(keyword);
+			var req = WebWrapper.Request(url)
+				.WithHeader("Referer", string.IsNullOrWhiteSpace(referer) ? "https://y.qq.com/" : referer)
+				.WithHeader("Origin", "https://y.qq.com");
+			if (!string.IsNullOrWhiteSpace(cookie)) req = req.WithHeader("Cookie", cookie);
+
+			var items = new List<QqSearchItem>();
+			var json = await req.AsString();
+			try
+			{
+				using var doc = JsonDocument.Parse(json);
+				if (!doc.RootElement.TryGetProperty("data", out var data)) return items;
+				if (!data.TryGetProperty("song", out var song)) return items;
+				if (!song.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array) return items;
+				int n = Math.Min(take, list.GetArrayLength());
+				for (int i = 0; i < n; i++)
+				{
+					var it = list[i];
+					var item = new QqSearchItem();
+					if (it.TryGetProperty("mid", out var m) && m.ValueKind == JsonValueKind.String) item.Mid = m.GetString() ?? string.Empty;
+					else if (it.TryGetProperty("songmid", out var sm) && sm.ValueKind == JsonValueKind.String) item.Mid = sm.GetString() ?? string.Empty;
+					item.Title = it.TryGetProperty("name", out var nm) && nm.ValueKind == JsonValueKind.String ? nm.GetString() ?? string.Empty : string.Empty;
+					if (it.TryGetProperty("singer", out var singers) && singers.ValueKind == JsonValueKind.Array && singers.GetArrayLength() > 0)
+					{
+						var names = new List<string>();
+						for (int s = 0; s < singers.GetArrayLength(); s++)
+						{
+							var si = singers[s];
+							if (si.TryGetProperty("name", out var sn) && sn.ValueKind == JsonValueKind.String)
+								names.Add(sn.GetString() ?? string.Empty);
+						}
+						item.Singers = string.Join(", ", names.Where(x => !string.IsNullOrEmpty(x)));
+					}
+					if (it.TryGetProperty("pay", out var pay) && pay.TryGetProperty("pay_play", out var pp) && pp.ValueKind == JsonValueKind.Number)
+						item.Playable = pp.GetInt32() == 0; // 0 means free play
+					items.Add(item);
+				}
+			}
+			catch (Exception ex)
+			{
+				Log.Debug(ex, "QQ search parse failed for keyword '{0}'", keyword);
+			}
+			return items;
 		}
 
 		[Command("bot badges")]
